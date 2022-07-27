@@ -1,5 +1,22 @@
 
+Local Server (Host 1)
+Hostname: host01
+Software installed:
+   CyberArk Conjur OSS
+   Ansible
+   sshd
+Service account:
+   username: service01
+   password: W/4m=cS6QSZSc*nd
 
+Remote Server (Host 2)
+Hostname: host02
+Software installed:
+sshd
+
+Service account:
+username: service02
+password: 5;LF+J4Rfqds:DZ8
 
 #Typical Playbook
 #Before we can do anything, we must create an inventory defining hosts Ansible 
