@@ -56,7 +56,7 @@ insecure-playbook.yml:
 $ ansible-playbook -i insecure-playbook/inventory insecure-playbook/insecure-playbook.yml
 
 
-#This is not secure since it displays credentials 
+#This is NOT SECURE since it displays credentials 
 $ cat insecure-playbook/inventory && echo
 
 *****************************************************************
