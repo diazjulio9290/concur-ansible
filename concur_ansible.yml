@@ -1,0 +1,281 @@
+
+
+
+#Typical Playbook
+#Before we can do anything, we must create an inventory defining hosts Ansible 
+#will connect to and a playbook Ansible will execute against those hosts.
+
+#Inventory File
+
+#First, let's create an inventory file. 
+#This is a common example of how inventory files hold connection 
+#information and secrets for Ansible to make connections to remote hosts. 
+#Paste the following to the  new file called 
+inventory:
+[demo_servers]
+host01 ansible_connection=ssh ansible_ssh_user=service01 ansible_ssh_pass=W/4m=cS6QSZSc*nd
+host02 ansible_connection=ssh ansible_ssh_user=service02 ansible_ssh_pass=5;LF+J4Rfqds:DZ8
+
+
+#Playbook
+
+#Next, let's create an insecure-playbook.yml Ansible playbook file and 
+#add what commands we'll be running in it. Paste the following 
+#to the "Code Editor" tab in a new file called 
+insecure-playbook.yml:
+- hosts: demo_servers
+  tasks:
+    - name: Get user name
+      shell: whoami
+      register: theuser
+
+    - name: Get host name
+      shell: hostname
+      register: thehost
+
+    - debug: msg="I am {{ theuser.stdout }} at {{ thehost.stdout }}"
+
+#Run playbook
+$ ansible-playbook -i insecure-playbook/inventory insecure-playbook/insecure-playbook.yml
+
+
+#This is not secure since it displays credentials 
+$ cat insecure-playbook/inventory && echo
+
+*****************************************************************
+# We are going to eliminate the risk by doing the following steps:
+
+# 1. Deploy the Conjur Lookup Plugin for Ansible
+# 2. Install Conjur Secrets Manager and the CLI
+# 3. Prepare and load Conjur Policy
+# 4. Centralize the secrets within Conjur Secrets Manager
+# 5. Rewrite the inventory and Ansible playbook for better security
+********************************************************************
+
+#Install Conjur
+#We initiated Conjur Secrets Manager for you in the background. 
+#Now, let's verify that it is complete by checking the web interface.
+#To access the web interface, click on the "Conjur UI" tab. 
+#You should see a webpage saying "Conjur is up and running!"
+#To create an account in Conjur, execute the following in the "Terminal" tab:
+
+$ docker-compose exec conjur conjurctl account create demo | tee conjur/admin.out
+
+         
+        Output:
+              
+Created new account 'demo'
+Token-Signing Public Key: -----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0EnDGXQhImz7pHcpxfh9
+fMfO/oqTHxqM8VWk+tpGbK/QMU2njZEeM44k/C3GEudGTd0rJhp2MGpGMZY/B09r
+5i0fDrjWy6A+FBTrjpdPW51ag+JYOZalgRGNOGuxUKknr6UZn9QWJvTBcq3jmwhB
+yrDrzG/jMwFm5HV3X0zqqOvQNUWhzBWGlJ9Z/9dsXpKUnXBrvsco3YYPHfQisvbi
+955jMS4/bKYgR4EkfqQV7d0SgOfiq8oKLuWuV9YKXMdkST7lZA5KLeIeGERSIPjw
+qB4Jf6cgeY8MDbOHUfip0Rdrd4MiHrea3yOEu7A0qgAKn2oWGCA/m3FV5stjjZQv
+bQIDAQAB
+-----END PUBLIC KEY-----
+API key for admin: 29rd2hw8per3w3vyrn4p3n7hdam1q4yf852z15vy23190t4g2fzs8am
+
+
+#You will be initializing the Docker-based Conjur CLI and 
+#authenticating as the admin user created in the previous challenge.
+ 
+#Initialize Conjur CLI
+	$ docker-compose exec client bash -c "echo yes | conjur init -u http://host01:8080 -a demo"
+
+
+#Login to Conjur :
+#Save the admin API key to a variable to use. In the last 
+#challenge, it was saved to a file named admin.out:
+   $ api_key="$(grep API conjur/admin.out | cut -d: -f2 | tr -d ' \r\n')"
+
+#Give Conjur CLI the command to authenticate as "admin"
+	 $ docker-compose exec client conjur authn login -u admin -p "$api_key"
+
+#NOTE:
+ #we have saved api_key in admin.out file and as api_key environment variable.
+
+#Conjur Policy
+#We need to create an identity, called a Host Identity, 
+#for Ansible to use to authenticate to the Conjur service. 
+#We also need to create authorization definitions on what Ansible 
+#has access to. In Conjur, we do this through policy-as-code.
+#Below is our "root" policy. It is the foundation of where the rest of our 
+#policy will branch from. In our "root" policy, 
+#we'll just be declaring the policies that will branch from it. 
+#In our case, it'll be one for server SSH user/pass 
+#secrets and one for Ansible's host identity and authorizations.
+
+conjur.yml
+- !policy
+  id: server
+- !policy
+  id: ansible
+
+
+#Next, we need to create a Conjur Policy file that defines 
+#the secret variables and authorizes resources to access them.
+#Copy the following and paste it on the "Code Editor" tab in a new policy file named server.yml:
+
+server.yml
+- &variables
+  - !variable host1/host
+  - !variable host1/user
+  - !variable host1/pass
+  - !variable host2/host
+  - !variable host2/user
+  - !variable host2/pass
+- !group secrets-users
+- !permit
+  resource: *variables
+  privileges: [ read, execute ]
+  roles: !group secrets-users
+  # Entitlements
+- !grant
+  role: !group secrets-users
+  member: !layer /ansible
+
+#Finally, we need to create the Host Identity for 
+#Ansible to be able to authenticate to the Conjur service and add it as
+#a member of groups that were previously authorized to access server secrets:
+#Copy the following and paste it on the "Code Editor" tab in a new policy file named ansible.yml:
+
+ansible.yml
+- !layer
+- !host ansible-01
+- !grant
+  role: !layer
+  member: !host ansible-01
+- !host-factory
+  layers: [ !layer ]
+
+
+#Now we need to load each policy 
+#Load ROOT Policy:
+docker cp conjur/conjur.yml root_client_1:/root/ 
+docker-compose exec client conjur policy load --replace root /root/conjur.yml
+
+#Load ANSIBLE Policy:
+docker cp conjur/ansible.yml root_client_1:/root/ 
+docker-compose exec client conjur policy load ansible /root/ansible.yml | tee ansible.out
+
+#Load SERVER Policy:
+docker cp conjur/server.yml root_client_1:/root/
+docker-compose exec client conjur policy load server /root/server.yml
+
+
+#we'll be installing the Conjur Host Identity role from 
+#Ansible Galaxy and granting our 
+#Ansible host dynamically to authenticate to the Conjur service.
+
+Inventory
+[servers]
+host01
+
+
+
+
+
+grant_conjur_id.yml
+- hosts: servers
+  roles:
+    - role: cyberark.conjur-host-identity
+      conjur_appliance_url: "http://host01:8080"
+      conjur_account: "demo"
+      conjur_host_factory_token: "{{lookup('env', 'HFTOKEN')}}"
+      conjur_host_name: "{{inventory_hostname}}"
+      conjur_validate_certs: "false"
+
+
+
+
+
+#Dynamic Enrollment
+#We will now grant a Host Identity to the Ansible server dynamically.
+# 1. Install the Conjur role using the following syntax:
+ansible-galaxy install cyberark.conjur-host-identity
+
+#Create a host factory token:
+docker-compose exec client conjur hostfactory token create ansible | tee conjur/hftoken
+
+#Save the token as environment variable:
+export HFTOKEN="$(grep token conjur/hftoken | cut -d: -f2 | tr -d ' \r\n' | tr -d ','  | tr -d '\"' )"
+
+#Prepare an inventory file. 
+Inventory:
+[servers]
+host01
+
+#Prepare a playbook to grant the Ansible host (host01) with a Conjur Host Identity. Paste the 
+#following into a new file named grant_conjur_id.yml
+grant_conjur_id.yml:
+- hosts: servers
+  roles:
+    - role: cyberark.conjur-host-identity
+      conjur_appliance_url: "http://host01:8080"
+      conjur_account: "demo"
+      conjur_host_factory_token: "{{lookup('env', 'HFTOKEN')}}"
+      conjur_host_name: "{{inventory_hostname}}"
+      conjur_validate_certs: "false"
+
+#Grant it
+$ ansible-playbook -i conjur/inventory conjur/grant_conjur_id.yml
+
+
+
+
+# The Secrets
+# Let's centralize the secrets & server info and add them to Conjur.
+
+host01
+root@host01:~# docker-compose exec client conjur variable values add server/host1/host "host01"
+Value added
+root@host01:~# docker-compose exec client conjur variable values add server/host1/user "service01"
+Value added
+root@host01:~# docker-compose exec client conjur variable values add server/host1/pass "W/4m=cS6QSZSc*nd"
+
+#Same with host02
+root@host01:~# docker-compose exec client conjur variable values add server/host2/host "host02"
+Value added
+root@host01:~# docker-compose exec client conjur variable values add server/host2/user "service02"
+Value added
+root@host01:~# docker-compose exec client conjur variable values add server/host2/pass "5;LF+J4Rfqds:DZ8"
+Value added
+
+
+
+
+#A MORE Secure Playbook
+#Let's convert the Conjur Host Identity to make it compatible with Ansible. We want to "urlify" it by changing any / in the host identity to %2F
+sed -i "s=login host/=login host%2F=" /etc/conjur.identity
+
+#Next, let's create an inventory file that defines our hosts that Ansible should connect to and execute our secure playbook on. Paste the following on the "Code Editor" tab in a new file named inventory:
+[demo_servers]
+host01
+host02
+
+
+#We also need to create the secure playbook that we'll be executing on the hosts contained in our inventory file. Paste the following on the "Code Editor" tab in a new file named playbook.yml
+- hosts: demo_servers
+  vars:
+      ansible_connection: ssh
+      ansible_host: "{{ lookup('conjur_variable', 'server/' + inventory_hostname + '/host') }}"
+      ansible_user: "{{ lookup('conjur_variable', 'server/' + inventory_hostname + '/user') }}"
+      ansible_ssh_pass: "{{ lookup('conjur_variable', 'server/' + inventory_hostname + '/pass') }}"
+
+  tasks:
+    - name: Get user name
+      shell: whoami
+      register: theuser
+
+    - name: Get host name
+      shell: hostname
+      register: thehost
+
+    - debug: msg="I am {{ theuser.stdout }} at {{ thehost.stdout }}"
+
+
+
+
+
+
